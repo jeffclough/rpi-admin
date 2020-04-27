@@ -1,0 +1,116 @@
+#!/usr/bin/env python3 
+
+import glob,os,re,sys
+from subprocess import Popen,PIPE
+from pprint import pprint
+
+blkid_parser=re.compile(
+  r'(/dev/sd.*?):'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+  r'(?:\s([_A-Z]+)="(.*?)")?'
+)
+
+def blkid(volumes=None):
+  """Run /sbin/blkid against the given volumes. Return a list of volume
+  dictionaries, each dict containing volume attributes."""
+
+  if not volumes:
+    volumes=glob.glob('/dev/sd*')
+  if volumes:
+    # Call /sbin/blkid to get volume attributes.
+    args=['/sbin/blkid']+volumes
+    with Popen(args,stdout=PIPE,stderr=PIPE) as blkid:
+      try:
+        out,err=blkid.communicate(timeout=5)
+      except TimeoutExpired:
+        blkid.kill()
+        out,err=blkid.communicate()
+      if blkid.returncode!=0:
+        # Output whatever error message we might have, and return an empty list.
+        sys.stderr.write('%s: %s'%(prog,err.decode('utf-8')))
+        return []
+      # Convert bytes to string.
+      out=out.decode('utf-8')
+
+      # Turn each line of blkid's output into a dictionary of attributes, and
+      # return a list of those dictionaries.
+      volumes=[] # List of volume dictionaries to be returned.
+      for line in [l for l in out.split(os.linesep) if l]:
+        m=blkid_parser.match(line)
+        if m:
+          g=[v for v in m.groups() if v!=None]
+          dev=g.pop(0)
+          v=dict([(g[i].lower(),g[i+1]) for i in range(0,len(g),2)])
+          v['dev']=dev
+          volumes.append(v)
+      return volumes
+
+  # Return an empty dictionary if we have nothing to return.
+  return []
+
+prog=os.path.basename(sys.argv[0])
+if len(sys.argv)>1:
+  volumes=sys.argv[1:]
+else:
+  volumes=None
+
+class Volume(object):
+
+  # The key values are Volume attribute names. The corresponding list of
+  # volume data (from the blkid() function) express the order in which
+  # each such value should be preferred.
+  precedence=dict(
+    id=('partuuid','uuid','dev'),
+    label=('label',),
+    type=('type','sec_type'),
+  )
+
+  def __init__(self,**kwargs):
+    """Use our keyword arguments from a blkid() entry to set our our
+    actual attributes defined by Volume.precedence."""
+
+    self.kwargs=dict(kwargs)
+    for v in self.precedence:
+      #print('D: looking for %r'%(v,))
+      for t in self.precedence[v]:
+        if t in kwargs:
+          if v=='id' and t!='dev':
+            setattr(self,v,'%s="%s"'%(t,kwargs[t]))
+          else:
+            setattr(self,v,kwargs[t])
+          #print('D: found %r'%(getattr(self,v)))
+          break
+      else:
+        raise ValueError("No suitable %r value given. Any of these would do: %s"%(v,', '.join(self.precedence[v])))
+    # Figure out where to mount this volume.
+    self.mountpoint='/vol/%s'%(self.label,)
+
+  def __str__(self):
+    return '%s %s %s'%(self.id,self.mountpoint,self.type)
+
+  def __repr__(self):
+    return '%s(%r)'%(self.__class__.__name__,self.kwargs)
+
+vols=blkid()
+pprint(vols)
+if vols:
+  # We only care about volumes that have a LABEL tag.
+  print()
+  vols=[Volume(**v) for v in vols if 'label' in v]
+  print()
+  print('\n'.join([str(v) for v in vols]))
