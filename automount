@@ -1,40 +1,34 @@
 #!/usr/bin/env python3 
 
-import glob,os,re,sys
+import argparse,glob,os,re,sys
 from subprocess import Popen,PIPE
 from pprint import pprint
 
-blkid_parser=re.compile(
-  r'(/dev/sd.*?):'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-  r'(?:\s([_A-Z]+)="(.*?)")?'
-)
+class BlockDevices(object):
 
-def blkid(volumes=None):
-  """Run /sbin/blkid against the given volumes. Return a list of volume
-  dictionaries, each dict containing volume attributes."""
+  # This list contains one entry for each /dev/sd* block device.
+  _devices=[]
+  
+  # This RE parses one line of /sbin/blkid's output.
+  _blkid_parser=re.compile(
+    r'(/dev/sd.*?):'
+    r'(?:\s([_A-Z]+)="(.*?)")?(?:\s([_A-Z]+)="(.*?)")?(?:\s([_A-Z]+)="(.*?)")?'
+    r'(?:\s([_A-Z]+)="(.*?)")?(?:\s([_A-Z]+)="(.*?)")?(?:\s([_A-Z]+)="(.*?)")?'
+    r'(?:\s([_A-Z]+)="(.*?)")?(?:\s([_A-Z]+)="(.*?)")?(?:\s([_A-Z]+)="(.*?)")?'
+    r'(?:\s([_A-Z]+)="(.*?)")?(?:\s([_A-Z]+)="(.*?)")?(?:\s([_A-Z]+)="(.*?)")?'
+    r'(?:\s([_A-Z]+)="(.*?)")?(?:\s([_A-Z]+)="(.*?)")?(?:\s([_A-Z]+)="(.*?)")?'
+  )
 
-  if not volumes:
-    volumes=glob.glob('/dev/sd*')
-  if volumes:
-    # Call /sbin/blkid to get volume attributes.
-    args=['/sbin/blkid']+volumes
-    with Popen(args,stdout=PIPE,stderr=PIPE) as blkid:
+  def __init__(self):
+    self._devices=[]
+    # See if there are any /dev/sd* "things" available to be mounted.
+    available=glob.glob('/dev/sd*')
+    if not available:
+      return
+
+    # Run blkid on any /dev/sd* devices we've found.
+    cmd=['/sbin/blkid']+available
+    with Popen(['/sbin/blkid']+available,stdout=PIPE,stderr=PIPE) as blkid:
       try:
         out,err=blkid.communicate(timeout=5)
       except TimeoutExpired:
@@ -42,32 +36,58 @@ def blkid(volumes=None):
         out,err=blkid.communicate()
       if blkid.returncode!=0:
         # Output whatever error message we might have, and return an empty list.
-        sys.stderr.write('%s: %s'%(prog,err.decode('utf-8')))
-        return []
-      # Convert bytes to string.
+        raise ChildProcessError(err.decode('utf-8'))
+      # Convert stdout bytes to string.
       out=out.decode('utf-8')
 
-      # Turn each line of blkid's output into a dictionary of attributes, and
-      # return a list of those dictionaries.
-      volumes=[] # List of volume dictionaries to be returned.
-      for line in [l for l in out.split(os.linesep) if l]:
-        m=blkid_parser.match(line)
-        if m:
-          g=[v for v in m.groups() if v!=None]
-          dev=g.pop(0)
-          v=dict([(g[i].lower(),g[i+1]) for i in range(0,len(g),2)])
-          v['dev']=dev
-          volumes.append(v)
-      return volumes
+    # Parse blkid's output.
+    for line in [l for l in out.split(os.linesep) if l]:
+      m=self._blkid_parser.match(line)
+      if m:
+        g=[v for v in m.groups() if v!=None]
+        attrs={g[i].lower():g[i+1] for i in range(1,len(g),2)}
+        attrs['dev']=g[0]
+        self._devices.append(attrs)
 
-  # Return an empty dictionary if we have nothing to return.
-  return []
+  def __contains__(self,key):
+    for d in self._devices:
+      if key in d:
+        return True
+    return False
 
-prog=os.path.basename(sys.argv[0])
-if len(sys.argv)>1:
-  volumes=sys.argv[1:]
-else:
-  volumes=None
+  def __getitem__(self,index):
+    return self._devices[index]
+
+  def __iter__(self):
+    self._index=0
+    return self
+
+  def __next__(self):
+    if self._index>=len(self._devices):
+      raise StopIteration
+    item=self._devices[self._index]
+    self.index+=1
+    return item
+
+  def __len__(self):
+    return len(self._devices)
+
+  def index(self,value,start=0,stop=2**31):
+    for i in range(len(self._devices)):
+      if 'label' in self._devices[i] and self._devices[i]['label']==value:
+        return i
+    raise ValueError('Device with label %r not found.'%(value,))
+
+  def __repr__(self):
+    return repr(self._devices)
+
+  def __str__(self):
+    return os.linesep.join([
+      '%s: %s'%(d['dev'],' '.join([
+        '%s=%s'%(k,v) for k,v in sorted(d.items()) if k!='dev'
+      ]))
+      for d in self._devices
+    ])
 
 class Volume(object):
 
@@ -81,8 +101,8 @@ class Volume(object):
   )
 
   def __init__(self,**kwargs):
-    """Use our keyword arguments from a blkid() entry to set our our
-    actual attributes defined by Volume.precedence."""
+    """Use our keyword arguments from a blkid() entry to set our actual
+    attributes defined by Volume.precedence."""
 
     self.kwargs=dict(kwargs)
     for v in self.precedence:
@@ -106,11 +126,6 @@ class Volume(object):
   def __repr__(self):
     return '%s(%r)'%(self.__class__.__name__,self.kwargs)
 
-vols=blkid()
-pprint(vols)
-if vols:
-  # We only care about volumes that have a LABEL tag.
-  print()
-  vols=[Volume(**v) for v in vols if 'label' in v]
-  print()
-  print('\n'.join([str(v) for v in vols]))
+devs=BlockDevices()
+print(repr(devs))
+
